@@ -467,7 +467,6 @@ class OWPatchPlugin(Star):
                 first = dates[0]
                 ym = first.split("-")
                 lines.append(f"发送 `/owpatch query {int(ym[0])} {int(ym[1])} {int(ym[2])}` 查看指定补丁。")
-                lines.append(f"例如：`/owpatch query {int(ym[0])} {int(ym[1])} {int(ym[2])}` 查看最新补丁。")
             else:
                 lines.append("发送 `/owpatch query <年份> <月份> <日期>` 查看指定补丁。")
             yield event.plain_result("\n".join(lines))
