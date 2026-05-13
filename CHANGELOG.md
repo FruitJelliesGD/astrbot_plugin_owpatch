@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0 (2026-05-13)
+## v1.2.0 (2026-05-13)
 
 ### ✨ 新功能
 - **新增 `/owpatch translate` 指令**：查询补丁日志后发送该指令，调用 AstrBot 当前大模型将补丁内容逐章节翻译为中文
@@ -31,7 +31,8 @@
 | `_conf_schema.json` | 新增 `translate_prompt` 配置项 |
 | `message_builder.py` | `build_help_message()` 新增 `/owpatch translate` |
 | `skills/overwatch-patch-translation/SKILL.md` | 重构为 system prompt 模板 |
-| `metadata.yaml` | 版本号 v1.0.0 → v1.1.0 |
+| `skills/overwatch-patch-translation/scripts/overwatch_terms.json` | **添加** — 346 条术语对照表 |
+| `metadata.yaml` | 版本号 v1.0.0 → v1.2.0 |
 
 ---
 

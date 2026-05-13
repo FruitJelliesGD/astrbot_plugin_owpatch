@@ -18,6 +18,7 @@
 - ⚙️ **Stadium 过滤**：可选关闭 Stadium（角斗领域）相关内容，基于 H4 标题重复检测自动过滤
 - 🛡️ **首次安装基线**：首次安装时静默记录当前补丁为基线，不推送历史旧补丁
 - 🔒 **并发安全**：定时任务与手动检查互斥，防止重复推送
+- 🌐 **AI 翻译**：`/owpatch translate` 调用 AstrBot 大模型将补丁翻译为中文，保留原格式与分段；利用 346 条术语对照表确保专有名词准确；翻译结果按内容哈希缓存，同一补丁未变更时秒级复用
 
 ## 安装
 
@@ -52,6 +53,7 @@ pip install -r requirements.txt
 | `proxy` | 空 | HTTP 代理地址，如 `http://127.0.0.1:7890` |
 | `cache_ttl_minutes` | `10` | 页面缓存有效期（分钟） |
 | `include_stadium` | `false` | 是否包含 Stadium 角斗领域内容 |
+| `translate_prompt` | `""` | 自定义翻译 Prompt（留空使用内置 SKILL.md 规范，填写后追加到系统提示中微调翻译风格） |
 
 ## 指令
 
@@ -66,6 +68,7 @@ pip install -r requirements.txt
 | `/owpatch query <YYYY/MM>` | 查询指定年月的补丁（跨年查询，如 `2026/4`） |
 | `/owpatch cache` | 批量预热历史补丁到本地永久缓存 |
 | `/owpatch cache status` | 查看本地缓存统计 |
+| `/owpatch translate` | 将上次查询的补丁日志翻译为中文（调用大模型，支持缓存） |
 | `/owpatch help` | 显示帮助信息 |
 
 **示例：**
@@ -79,6 +82,8 @@ pip install -r requirements.txt
 /owpatch query 2026/4            # 查询2026年4月补丁（跨年查询）
 /owpatch cache                   # 批量预热所有历史补丁
 /owpatch cache status            # 查看缓存统计
+/owpatch query 5 13              # 查询5月13日补丁
+/owpatch translate               # 将上一次查询的补丁翻译为中文
 ```
 
 ## 消息格式
@@ -116,6 +121,7 @@ pip install -r requirements.txt
 | 短时缓存 | 当月页面 | `cache_ttl_minutes`（默认 10 分钟） | 仅在定时窗口内生效，避免短时间重复请求暴雪服务器 |
 | 日级缓存 | 上月页面 | 1 天 | 上月补丁已稳定，每天刷新一次即可 |
 | 永久缓存 | 更早的历史月份 | 无过期 | 通过 `/owpatch cache` 批量预热，查询秒级响应；每月初自动将上月升级为永久缓存 |
+| 翻译缓存 | 翻译结果 | 按内容哈希 | 通过 `/owpatch translate` 生成，下次同一补丁（内容未变更）直接复用，0 LLM 调用 |
 
 > **注意**：当月补丁页面在定时窗口外（如手动 `/owpatch check`）始终实时获取，不走缓存。
 
@@ -135,8 +141,9 @@ pip install -r requirements.txt
 
 ```
 data/plugin_data/astrbot_plugin_owpatch/
-├── state.json          # 状态文件（最新补丁日期/哈希、绑定会话、当日推送标记）
-└── cache/              # 本地缓存目录（历史补丁页面缓存）
+├── state.json              # 状态文件（最新补丁日期/哈希、绑定会话、当日推送标记）
+├── cache/                  # 本地缓存目录（历史补丁页面缓存）
+└── cache/translation/      # 翻译缓存目录（按日期+哈希索引的翻译结果）
 ```
 
 - 如需**重置插件状态**（清空绑定、重新建立基线等），删除 `state.json` 后重载插件即可
@@ -168,6 +175,7 @@ data/plugin_data/astrbot_plugin_owpatch/
 astrbot_plugin_owpatch/
 ├── main.py               # 插件主入口（Star 子类，指令注册，核心逻辑）
 ├── config.py             # 配置常量与默认值
+├── translator.py         # AI 翻译模块（读取 SKILL.md + 术语表，逐章节 LLM 翻译，缓存管理）
 ├── fetcher.py            # HTTP 页面获取（httpx + TTL 缓存 + 代理）
 ├── parser.py             # HTML 解析（H4 边界 + PatchNotesHeroUpdate + Stadium 过滤）
 ├── state_manager.py      # JSON 状态持久化（补丁追踪 + UMO + 节级哈希）
@@ -175,9 +183,16 @@ astrbot_plugin_owpatch/
 ├── forward_builder.py    # OneBot 原始嵌套合并转发构建器
 ├── cache_manager.py      # 三级本地缓存（永久/日级/短时）
 ├── scheduler.py          # asyncio 定时调度器（北京时间窗口）
-├── _conf_schema.json     # 可视化配置项定义（8 项）
+├── _conf_schema.json     # 可视化配置项定义（9 项）
 ├── metadata.yaml         # 插件元数据
-└── requirements.txt      # Python 依赖
+├── CHANGELOG.md          # 版本变更日志
+├── requirements.txt      # Python 依赖
+└── skills/
+    └── overwatch-patch-translation/
+        ├── SKILL.md      # 翻译技能规范（LLM system prompt 模板）
+        └── scripts/
+            └── overwatch_terms.json  # 346 条专有名词对照表
+```
 ```
 
 ## 依赖
