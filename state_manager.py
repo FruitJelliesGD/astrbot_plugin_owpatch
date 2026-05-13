@@ -131,6 +131,25 @@ class StateManager:
                 delta.append(heading)
         return delta
 
+    def find_deleted_sections(self, current_hashes: dict) -> list[str]:
+        """找出已从在线版消失的章节 heading（旧状态中有，当前没有）。"""
+        recorded = self.get_section_hashes()
+        deleted = []
+        for heading in recorded:
+            if heading not in current_hashes:
+                deleted.append(heading)
+        return deleted
+
+    def find_all_deltas(self, current_hashes: dict) -> tuple[list[str], list[str]]:
+        """统一查询新增／修改章节 和 已删除章节。
+
+        Returns:
+            (changed_headings, deleted_headings)
+        """
+        changed = self.find_delta_sections(current_hashes)
+        deleted = self.find_deleted_sections(current_hashes)
+        return changed, deleted
+
     # ------------------------------------------------------------------
     # 当日状态
     # ------------------------------------------------------------------

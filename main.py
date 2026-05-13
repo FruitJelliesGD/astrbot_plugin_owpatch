@@ -32,7 +32,7 @@ from .config import (
 )
 from . import fetcher as fetcher_mod
 from .fetcher import fetch_page, build_monthly_url
-from .parser import parse_patches, get_latest_patch, get_patch_dates, compute_content_hash, filter_stadium, compute_section_hashes, get_delta_sections
+from .parser import parse_patches, get_latest_patch, get_patch_dates, compute_content_hash, filter_stadium, compute_section_hashes, diff_sections
 from .state_manager import StateManager
 from .message_builder import (
     build_patch_message,
@@ -86,11 +86,10 @@ class OWPatchPlugin(Star):
         self.state_mgr.init_data_dir()
         self.state_mgr.load()
 
-        # 初始化缓存管理器 + 月初旋转
+        # 初始化缓存管理器（单级永久缓存）
         if self.state_mgr.data_dir:
             self.patch_cache = PatchCache(self.state_mgr.data_dir)
-            self.patch_cache.rotate()
-            logger.info("[owpatch] 三级缓存已初始化")
+            logger.info("[owpatch] 永久缓存已初始化")
 
         # 检查跨天重置
         today = self._now_beijing_str()
@@ -203,28 +202,27 @@ class OWPatchPlugin(Star):
             s = self.patch_cache.status()
             yield event.plain_result(
                 f"📦 缓存状态\n"
-                f"  永久: {s['permanent']} 个月\n"
-                f"  日级: {s['daily']} 个月\n"
-                f"  短时: {s['short']} 个月"
+                f"  已缓存: {s['cached_months']} 个月"
             )
             event.stop_event()
             return
 
-        # 计算预热范围：2016/05 ~ (当前 - 2月)
+        # 预热所有历史月份：2016/05 ~ 上月
         now = datetime.now(BEIJING_TZ)
-        em = now.month - 2
+        em = now.month - 1
         ey = now.year
         if em <= 0:
             em += 12
             ey -= 1
 
+        tpl = self._get_config(KEY_BASE_URL_TEMPLATE, DEFAULT_BASE_URL)
         yield event.plain_result(
             f"🔄 开始预热缓存 (2016/05 ~ {ey}/{em:02d})，将逐月下载并永久存储...\n"
             f"  预计需要数分钟，请耐心等待。"
         )
         try:
             ok, fail = await self.patch_cache.warmup(
-                fetch_page, parse_patches,
+                fetch_page, parse_patches, tpl,
                 2016, 5, ey, em,
             )
         except Exception as e:
@@ -292,159 +290,164 @@ class OWPatchPlugin(Star):
 
     @owpatch.command("query")
     async def cmd_query(self, event: AstrMessageEvent, month: str = "", day: str = ""):
-        """查询指定年份/月份的补丁日志。
+        """查询指定月份的补丁。
 
         用法：
-            /owpatch query 2025        → 列出 2025 年有补丁的月份
-            /owpatch query 2025 4      → 列出 2025年4月 所有补丁日期
-            /owpatch query 2025 4 28   → 推送 2025年4月28日 的补丁内容
-            /owpatch query 4           → 列出当年4月所有补丁日期
-            /owpatch query 4 28        → 推送当年4月28日的补丁内容
-            /owpatch query 2025/04     → 同上，支持 / 分隔年月
-            /owpatch query 2025-04     → 同上，支持 - 分隔年月
+            /owpatch query 4        → 列出4月所有补丁日期
+            /owpatch query 4 28     → 推送4月28日的补丁内容（在线对比，有变更则先发Delta）
+            /owpatch query 2026/04  → 同上，完整年月格式
         """
         if not month:
             yield event.plain_result(
-                "请指定年份或月份。用法：\n"
-                "/owpatch query <年份> [月份] [日期]  — 查询指定年份/月份\n"
-                "/owpatch query <月份> [日期]        — 查询当年月份\n"
-                "例如：/owpatch query 2025 或 /owpatch query 4 或 /owpatch query 2025 4 28"
+                "请指定月份。用法：/owpatch query <月份> [日期]\n"
+                "例如：/owpatch query 4 或 /owpatch query 4 28"
             )
             event.stop_event()
             return
 
-        # ── 智能检测：用户输入可能是 2025 4（年+月）────
-        # 仅当 month 不是 YYYY/MM / YYYY-MM 格式时进行检测
-        if "/" not in month and "-" not in month:
-            month_int = self._try_parse_int(month)
-            day_int = self._try_parse_int(day) if day else None
-            # month 是 4 位数年份（如 2025），且 day 是 1-12 的月份 → 互换
-            if (
-                month_int is not None and month_int >= 2016
-                and day_int is not None and 1 <= day_int <= 12
-            ):
-                # 格式: /owpatch query 2025 4 [date]
-                # → 转换为 year=month, month=day, day=后续参数
-                year = month_int
-                month_num = day_int
-                # 检查是否有第三个参数被当作 day 传入
-                # 在 AstrBot 双参数模型下无法直接获取，通过事件原始消息提取
-                raw_msg = event.message_str or ""
-                day = self._extract_third_arg(raw_msg)
-                month_label = f"{year}年{month_num}月"
-            elif (
-                month_int is not None and 1 <= month_int <= 12
-            ):
-                # 格式: /owpatch query 4 [day]
-                year, month_num = self._parse_query_month(month)
-                if month_num is None:
-                    yield event.plain_result(
-                        f"无法解析月份 '{month}'。请使用数字（如 4）或 YYYY/MM 格式。"
-                    )
-                    event.stop_event()
-                    return
-                month_label = f"{year}年{month_num}月"
-            else:
-                # month 可能是年份
-                year, month_num = self._parse_query_month(month)
-                if month_num is not None:
-                    month_label = f"{year}年{month_num}月"
-                else:
-                    # 纯年份 → 列出整年
-                    yield event.plain_result(f"🔍 正在查询 {year} 年的补丁记录...")
-                    try:
-                        result = await self._query_year_summary(year)
-                        yield event.plain_result(result)
-                    except Exception as e:
-                        logger.error(f"[owpatch] 年份查询异常: {e}")
-                        yield event.plain_result(f"❌ 查询失败: {e}")
-                    event.stop_event()
-                    return
-        else:
-            # 格式: YYYY/MM 或 YYYY-MM
-            year, month_num = self._parse_query_month(month)
-            if month_num is None:
-                yield event.plain_result(
-                    f"无法解析 '{month}'。请使用 YYYY/MM 或 YYYY-MM 格式。"
-                )
-                event.stop_event()
-                return
-            month_label = f"{year}年{month_num}月"
+        # 解析月份
+        year, month_num = self._parse_query_month(month)
+        if month_num is None:
+            yield event.plain_result(
+                f"无法解析月份 '{month}'。请使用数字（如 4）或 YYYY/MM 格式。"
+            )
+            event.stop_event()
+            return
 
-        # ── 以下为标准月查询/日查询逻辑 ──
+        month_label = f"{year}年{month_num}月"
         url = build_monthly_url(
             year, month_num,
             self._get_config(KEY_BASE_URL_TEMPLATE, DEFAULT_BASE_URL)
         )
 
-        # 优先从缓存读取（当月不缓存，始终实时）
-        now = datetime.now(BEIJING_TZ)
-        is_current_month = year == now.year and month_num == now.month
-        all_patches = None
-        if not is_current_month:
-            all_patches = self.patch_cache.get(year, month_num) if self.patch_cache else None
-            if all_patches is not None:
-                all_patches = self._apply_stadium_filter(all_patches)
+        # ────────────────────────────────────────────────────────────────
+        # 第一步：获取本地缓存版本
+        # ────────────────────────────────────────────────────────────────
+        cached_patches = self.patch_cache.get(year, month_num) if self.patch_cache else None
 
-        if all_patches is None:
-            # 缓存未命中 → HTTP 获取
-            html = await fetch_page(
-                url,
-                timeout=self._get_config(KEY_REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
-                user_agent=self._get_config(KEY_USER_AGENT, DEFAULT_USER_AGENT),
-                proxy=self._get_proxy(),
-                force_refresh=is_current_month,  # 当月强制刷新
-            )
-            if html is None:
-                yield event.plain_result(f"❌ 无法获取 {month_label} 的补丁页面，请稍后重试。")
+        # ────────────────────────────────────────────────────────────────
+        # 第二步：联网获取最新版本（优先）
+        # ────────────────────────────────────────────────────────────────
+        html = await fetch_page(
+            url,
+            timeout=self._get_config(KEY_REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
+            user_agent=self._get_config(KEY_USER_AGENT, DEFAULT_USER_AGENT),
+            proxy=self._get_proxy(),
+            force_refresh=True,
+        )
+
+        online_patches = None
+        online_failed = False
+        if html is not None:
+            online_patches = parse_patches(html)
+            if online_patches:
+                # 写入永久缓存（原始完整数据，不做 Stadium 过滤）
+                self._put_cache(year, month_num, online_patches)
+        else:
+            online_failed = True
+            logger.warning(f"[owpatch] 联网获取 {month_label} 失败，回退本地缓存")
+
+        # 推送时按配置决定是否过滤 Stadium
+        patches_for_display = self._apply_stadium_filter(
+            online_patches if online_patches is not None
+            else (cached_patches if cached_patches is not None else [])
+        )
+
+        if not patches_for_display:
+            if online_failed and cached_patches:
+                patches_for_display = self._apply_stadium_filter(cached_patches)
+            if not patches_for_display:
+                yield event.plain_result(f"{month_label} 没有找到补丁记录。")
                 event.stop_event()
                 return
 
-            all_patches = self._apply_stadium_filter(parse_patches(html))
-
-            # 按规则写入缓存
-            if self.patch_cache and all_patches:
-                self._put_cache(year, month_num, all_patches)
-
-        if not all_patches:
-            yield event.plain_result(f"{month_label} 没有找到补丁记录。")
-            event.stop_event()
-            return
-
+        # ────────────────────────────────────────────────────────────────
+        # 第三步：仅列出日期
+        # ────────────────────────────────────────────────────────────────
         if not day:
-            # 列出所有日期
-            dates = get_patch_dates(all_patches)
-            yield event.plain_result(build_date_list_message(dates, month_label))
+            dates = get_patch_dates(patches_for_display)
+            msg = build_date_list_message(dates, month_label)
+            if online_failed:
+                msg += "\n\n⚠️ 无法联网获取最新版本，展示的是本地缓存内容。"
+            yield event.plain_result(msg)
             event.stop_event()
             return
 
-        # 查找指定日期的补丁
+        # ────────────────────────────────────────────────────────────────
+        # 第四步：查找指定日期的补丁
+        # ────────────────────────────────────────────────────────────────
         day_int = int(day)
         target_date = f"{year}-{month_num:02d}-{day_int:02d}"
-        target_patch = None
-        for p in all_patches:
-            if p["date"] == target_date:
-                target_patch = p
-                break
 
-        if target_patch is None:
+        def find_patch(patches, date_str):
+            for p in (patches or []):
+                if p["date"] == date_str:
+                    return p
+            return None
+
+        online_target = find_patch(online_patches, target_date) if online_patches else None
+        cached_target = find_patch(cached_patches, target_date) if cached_patches else None
+        display_target = find_patch(patches_for_display, target_date)
+
+        if display_target is None:
             yield event.plain_result(
                 f"{month_label} 没有找到日期为 {target_date} 的补丁。\n"
-                f"可用日期：{', '.join(get_patch_dates(all_patches))}"
+                f"可用日期：{', '.join(get_patch_dates(patches_for_display))}"
             )
             event.stop_event()
             return
 
-        # 发送 — aiocqhttp 走原始嵌套转发
+        # ────────────────────────────────────────────────────────────────
+        # 第五步：在线 vs 本地对比差异
+        # ────────────────────────────────────────────────────────────────
+        diff = {"added": [], "modified": [], "deleted": []}
+        has_delta = False
+        if online_target and cached_target and not online_failed:
+            raw_diff = diff_sections(cached_target.get("sections", []), online_target.get("sections", []))
+            # 推送时按配置过滤 Stadium 内容（对比时用全部内容，展示时过滤）
+            if not self._get_config(KEY_INCLUDE_STADIUM, DEFAULT_INCLUDE_STADIUM):
+                for key in ("added", "modified", "deleted"):
+                    diff[key] = [s for s in raw_diff[key] if "stadium" not in s.get("heading", "").lower()]
+            else:
+                diff = raw_diff
+            has_delta = bool(diff.get("added") or diff.get("modified") or diff.get("deleted"))
+
+        # ────────────────────────────────────────────────────────────────
+        # 第六步：推送 — 有差异时先发 Delta
+        # ────────────────────────────────────────────────────────────────
         platform = event.get_platform_name() or ""
         sender_id = event.get_sender_id() or ""
         uin = int(sender_id) if sender_id.isdigit() else 0
 
+        if has_delta:
+            date_label = target_date[5:]  # "2026-05-12" → "05-12"
+            delta_chains = build_delta_message(date_label, diff)
+            # 先发送 Delta
+            if platform == "aiocqhttp" and uin:
+                try:
+                    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                    if isinstance(event, AiocqhttpMessageEvent):
+                        delta_fwds = build_raw_forward(f"📌 {target_date} 补丁变更", diff.get("added", []) + diff.get("modified", []) + diff.get("deleted", []), uin)
+                        gid = event.message_obj.group_id
+                        for fwd in delta_fwds:
+                            if gid:
+                                await event.bot.call_action("send_group_forward_msg", group_id=int(gid), messages=fwd)
+                            else:
+                                await event.bot.call_action("send_private_forward_msg", user_id=uin, messages=fwd)
+                except Exception as e:
+                    logger.warning(f"[owpatch] Delta 原始转发失败，回退: {e}")
+                    for cl in delta_chains:
+                        yield event.chain_result(cl)
+            else:
+                for cl in delta_chains:
+                    yield event.chain_result(cl)
+
+        # 再发送完整补丁
         if platform == "aiocqhttp" and uin:
             try:
                 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
                 if isinstance(event, AiocqhttpMessageEvent):
-                    raw_fwds = build_raw_forward(target_patch["title"], target_patch["sections"], uin)
+                    raw_fwds = build_raw_forward(display_target["title"], display_target["sections"], uin)
                     gid = event.message_obj.group_id
                     for fwd in raw_fwds:
                         if gid:
@@ -454,13 +457,12 @@ class OWPatchPlugin(Star):
                     event.stop_event()
                     return
             except Exception as e:
-                logger.warning(f"[owpatch] 原始转发失败，回退: {e}")
+                logger.warning(f"[owpatch] 完整补丁原始转发失败，回退: {e}")
 
-        # 非 aiocqhttp 回退
         chains = build_patch_message(
-            title=target_patch["title"],
-            text=target_patch["text"],
-            sections=target_patch["sections"],
+            title=display_target["title"],
+            text=display_target["text"],
+            sections=display_target["sections"],
             platform_name=platform,
             bot_self_id=sender_id,
         )
@@ -478,10 +480,12 @@ class OWPatchPlugin(Star):
             await self._check_and_notify()
 
     async def _check_and_notify(self) -> bool:
-        """核心检查：获取 → 解析 → 比较（整版 + 节级） → 推送。"""
+        """核心检查：获取 → 解析 → 缓存 → 比较（整版 + 节级） → 先 Delta 后 Full 推送。"""
         urls = self._get_target_urls()
-        all_patches = []
+        import re
 
+        # ── 获取 & 缓存原始数据（不做 Stadium 过滤）──
+        raw_patches_pool = []
         for url in urls:
             logger.info(f"[owpatch] 检查: {url}")
             html = await fetch_page(
@@ -494,38 +498,68 @@ class OWPatchPlugin(Star):
             if html is None:
                 logger.warning(f"[owpatch] 获取失败，跳过: {url}")
                 continue
-            all_patches.extend(self._apply_stadium_filter(parse_patches(html)))
+            patches = parse_patches(html)
+            if not patches:
+                continue
+            # 提取年月并缓存原始数据
+            ym = re.search(r'/live/(\d{4})/(\d{2})/', url)
+            if ym:
+                self._put_cache(int(ym.group(1)), int(ym.group(2)), patches)
+            raw_patches_pool.extend(patches)
 
-        if not all_patches:
+        if not raw_patches_pool:
             logger.info("[owpatch] 所有页面均无补丁数据")
             return False
 
-        latest = get_latest_patch(all_patches)
+        # ── 比较逻辑使用原始（未过滤）章节 ──
+        latest = get_latest_patch(raw_patches_pool)
         if latest is None:
             return False
 
         latest_date = latest["date"]
         latest_hash = compute_content_hash(latest["raw_html"])
-        sections = latest["sections"]
-        current_hashes = compute_section_hashes(sections)
+        raw_sections = latest.get("sections", [])
+        current_hashes = compute_section_hashes(raw_sections)
 
-        # --- 情况 1：全新补丁 ---
+        # 情况 1：全新补丁 → 直接推送完整内容
         if self.state_mgr.is_new_patch(latest_date, latest_hash):
             logger.info(f"[owpatch] 发现新补丁！日期: {latest_date}")
             self.state_mgr.mark_pushed(latest_date, latest_hash, current_hashes)
-            return await self._push_full(latest)
+            display_patch = self._apply_stadium_filter([latest])[0]
+            return await self._push_full(display_patch)
 
-        # --- 情况 2：同一补丁，节级增量检测 ---
-        delta_headings = self.state_mgr.find_delta_sections(current_hashes)
+        # 情况 2：节级增量检测（含新增 / 修改 / 删除）
+        changed, deleted = self.state_mgr.find_all_deltas(current_hashes)
 
-        # Stadium 关闭时过滤 Stadium 增量
-        if not self._get_config(KEY_INCLUDE_STADIUM, DEFAULT_INCLUDE_STADIUM):
-            delta_headings = [h for h in delta_headings if "stadium" not in h.lower()]
+        include_stadium = self._get_config(KEY_INCLUDE_STADIUM, DEFAULT_INCLUDE_STADIUM)
+        if not include_stadium:
+            changed = [h for h in changed if "stadium" not in h.lower()]
+            deleted = [h for h in deleted if "stadium" not in h.lower()]
 
-        if delta_headings:
-            delta_sections = get_delta_sections(sections, delta_headings)
+        if changed or deleted:
+            # 构建显示用的补丁（已过滤 Stadium）
+            display_patch = self._apply_stadium_filter([latest])[0]
+            display_sections = display_patch.get("sections", [])
+            display_map = {s.get("heading", ""): s for s in display_sections}
+
+            recorded = self.state_mgr.get_section_hashes()
+            diff = {"added": [], "modified": [], "deleted": []}
+
+            for h in changed:
+                if h in display_map:
+                    sec = display_map[h]
+                    if h in recorded:
+                        diff["modified"].append(sec)
+                    else:
+                        diff["added"].append(sec)
+
+            for h in deleted:
+                diff["deleted"].append({"heading": h, "content": "", "sub_sections": []})
+
             self.state_mgr.mark_pushed(latest_date, latest_hash, current_hashes)
-            return await self._push_delta(latest, delta_sections)
+
+            # 先推送 Delta，再推送完整补丁
+            return await self._push_delta_then_full(display_patch, diff)
 
         logger.info(f"[owpatch] 补丁无变化（最新: {latest_date}）")
         return False
@@ -560,14 +594,26 @@ class OWPatchPlugin(Star):
         )
         return await self._send_to_umos(umos, chains, "推送")
 
-    async def _push_delta(self, latest: dict, delta_sections: list[dict]) -> bool:
-        """推送增量追加内容。"""
+    async def _push_delta_then_full(self, latest: dict, diff: dict) -> bool:
+        """先推送 Delta 变更摘要，再推送完整补丁。"""
         umos = self.state_mgr.get_umos()
         if not umos:
             return True
+
         date_label = latest["date"][5:]  # "2026-05-12" → "05-12"
-        chains = build_delta_message(date_label, delta_sections)
-        return await self._send_to_umos(umos, chains, "增量推送")
+        delta_chains = build_delta_message(date_label, diff)
+        full_sent = False
+
+        # 发送 Delta
+        delta_ok = await self._send_to_umos(umos, delta_chains, "Delta推送")
+        if delta_ok:
+            # 仅 delta 成功后发送完整补丁
+            full_sent = await self._push_full(latest)
+        else:
+            # delta 失败仍尝试推送完整补丁
+            full_sent = await self._push_full(latest)
+
+        return delta_ok or full_sent
 
     async def _send_to_umos(self, umos: list[str], chains: list, label: str) -> bool:
         """遍历 UMO 发送消息链。"""
@@ -587,7 +633,7 @@ class OWPatchPlugin(Star):
     # ==================================================================
 
     async def _find_prev_month_latest(self) -> str | None:
-        """查询上个月的最新补丁日期，用于月末/月初无补丁时的友好提示。"""
+        """查询上个月的最新补丁日期（同时缓存数据）。"""
         now = datetime.now(BEIJING_TZ)
         if now.month == 1:
             y, m = now.year - 1, 12
@@ -607,8 +653,11 @@ class OWPatchPlugin(Star):
         if not html:
             return None
 
-        patches = self._apply_stadium_filter(parse_patches(html))
-        latest = get_latest_patch(patches)
+        patches = parse_patches(html)
+        if patches:
+            self._put_cache(y, m, patches)  # 缓存原始数据
+        display = self._apply_stadium_filter(patches)
+        latest = get_latest_patch(display)
         if latest and latest["date"] != "unknown":
             return latest["date"]
         return None
@@ -618,9 +667,10 @@ class OWPatchPlugin(Star):
     # ==================================================================
 
     async def _init_baseline(self):
-        """首次安装时静默抓取当前最新补丁，记录为基线（不推送）。"""
+        """首次安装时静默抓取当前最新补丁，记录为基线并缓存（不推送）。"""
         urls = self._get_target_urls()
-        all_patches = []
+        import re
+        raw_pool = []
 
         for url in urls:
             html = await fetch_page(
@@ -631,16 +681,23 @@ class OWPatchPlugin(Star):
                 force_refresh=True,
             )
             if html:
-                all_patches.extend(self._apply_stadium_filter(parse_patches(html)))
+                patches = parse_patches(html)
+                if patches:
+                    # 缓存原始数据
+                    ym = re.search(r'/live/(\d{4})/(\d{2})/', url)
+                    if ym:
+                        self._put_cache(int(ym.group(1)), int(ym.group(2)), patches)
+                    raw_pool.extend(patches)
 
-        if not all_patches:
+        if not raw_pool:
             logger.warning("[owpatch] 基线建立失败：所有页面均无数据")
             return
 
-        latest = get_latest_patch(all_patches)
+        # 使用原始（未过滤）章节计算哈希
+        latest = get_latest_patch(raw_pool)
         if latest:
             latest_hash = compute_content_hash(latest["raw_html"])
-            section_hashes = compute_section_hashes(latest["sections"])
+            section_hashes = compute_section_hashes(latest.get("sections", []))
             self.state_mgr.set_baseline(latest["date"], latest_hash, section_hashes)
             logger.info(
                 f"[owpatch] 基线已建立: {latest['date']} "
@@ -678,109 +735,6 @@ class OWPatchPlugin(Star):
     # 工具方法
     # ==================================================================
 
-    @staticmethod
-    def _try_parse_int(s: str) -> int | None:
-        """安全地将字符串转为整数，失败返回 None。"""
-        try:
-            return int(s.strip())
-        except (ValueError, TypeError):
-            return None
-
-    @staticmethod
-    def _extract_third_arg(raw_msg: str) -> str:
-        """从原始消息中提取 query 指令的第三个参数（日期）。
-
-        AstrBot 命令框架只捕获前两个参数到 month/day，
-        当用户输入 `/owpatch query 2025 4 28` 时，需要从原始消息提取 28。
-        """
-        import re
-        # 匹配 owpatch query <arg1> <arg2> <arg3>，容忍前缀（如 / 或 bot 提及）
-        m = re.search(r'\bowpatch\s+query\s+\S+\s+\S+\s+(\d{1,2})\b', raw_msg, re.IGNORECASE)
-        if m:
-            return m.group(1)
-        return ""
-
-    async def _query_year_summary(self, year: int) -> str:
-        """查询指定年份所有月份的补丁概况，返回摘要文本。
-
-        优先使用本地缓存，缓存未命中则实时请求（每个请求间有短暂间隔防止风控）。
-        """
-        now = datetime.now(BEIJING_TZ)
-        template = self._get_config(KEY_BASE_URL_TEMPLATE, DEFAULT_BASE_URL)
-        timeout = self._get_config(KEY_REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT)
-        ua = self._get_config(KEY_USER_AGENT, DEFAULT_USER_AGENT)
-        proxy = self._get_proxy()
-
-        months_with_patches: dict[int, list[str]] = {}  # month -> [date, ...]
-        empty_months: list[int] = []
-        failed_months: list[int] = []
-
-        for m in range(1, 13):
-            # 超过当前月份的未来月份跳过
-            if year == now.year and m > now.month:
-                break
-
-            patches: list[dict] | None = None
-
-            # 优先缓存
-            if self.patch_cache:
-                patches = self.patch_cache.get(year, m)
-                if patches is not None:
-                    patches = self._apply_stadium_filter(patches)
-
-            # 缓存未命中 → HTTP 请求
-            if patches is None:
-                url = build_monthly_url(year, m, template)
-                html = await fetch_page(
-                    url, timeout=timeout, user_agent=ua,
-                    proxy=proxy, force_refresh=True,
-                )
-                if html is None:
-                    failed_months.append(m)
-                    continue
-                patches = self._apply_stadium_filter(parse_patches(html))
-                if self.patch_cache and patches:
-                    self._put_cache(year, m, patches)
-
-            if patches:
-                dates = get_patch_dates(patches)
-                if dates:
-                    months_with_patches[m] = dates
-                else:
-                    empty_months.append(m)
-            else:
-                empty_months.append(m)
-
-            # 避免连续请求触发风控
-            if m < 12:
-                await asyncio.sleep(1.5)
-
-        # 构建结果
-        lines = [f"📋 {year} 年守望先锋补丁概览", "=" * 30]
-        total_patches = 0
-
-        if months_with_patches:
-            for m, dates in sorted(months_with_patches.items()):
-                total_patches += len(dates)
-                lines.append(f"  {m:02d}月 — {len(dates)} 个补丁")
-                for d in dates:
-                    lines.append(f"      {d}")
-        else:
-            lines.append("  没有找到任何补丁记录。")
-
-        lines.append("=" * 30)
-        if total_patches > 0:
-            lines.append(f"📊 共 {total_patches} 个补丁（{len(months_with_patches)} 个有补丁的月份）")
-        if empty_months:
-            lines.append(f"📭 无补丁月份: {', '.join(f'{m:02d}' for m in empty_months)}")
-        if failed_months:
-            lines.append(f"⚠️ 获取失败: {', '.join(f'{m:02d}' for m in failed_months)}")
-        lines.append("")
-        lines.append("发送 `/owpatch query <年份> <月份>` 查看指定月补丁日期。")
-        lines.append('例如：`/owpatch query 2025 4` 查看 2025年4月。')
-
-        return "\n".join(lines)
-
     def _get_config(self, key: str, default=None):
         """读取插件配置项。
 
@@ -806,22 +760,9 @@ class OWPatchPlugin(Star):
         return filter_stadium(patches)
 
     def _put_cache(self, year: int, month: int, patches: list[dict]) -> None:
-        """按三级规则写入缓存（当月不缓存）。"""
-        if not self.patch_cache:
-            return
-        now = datetime.now(BEIJING_TZ)
-        if year == now.year and month == now.month:
-            return  # 当月始终实时，不缓存
-        if self._is_last_month(year, month):
-            self.patch_cache.put_daily(year, month, patches)
-        else:
-            self.patch_cache.put_permanent(year, month, patches)
-
-    @staticmethod
-    def _is_last_month(year: int, month: int) -> bool:
-        now = datetime.now(BEIJING_TZ)
-        py, pm = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
-        return year == py and month == pm
+        """写入永久缓存（所有月份统一处理）。"""
+        if self.patch_cache:
+            self.patch_cache.put(year, month, patches)
 
     @staticmethod
     def _now_beijing_str() -> str:
@@ -833,11 +774,10 @@ class OWPatchPlugin(Star):
         """解析用户输入的月份参数。
 
         Args:
-            raw: 如 "4", "04", "2025", "2026/04", "2025-04", "2026/4"
+            raw: 如 "4", "04", "2026/04", "2026/4"
 
         Returns:
-            (year, month) — month 为 None 表示只指定了年份（整年查询）
-                          若完全无法解析则返回 (now.year, None)
+            (year, month) — month 为 None 表示解析失败
         """
         now = datetime.now(BEIJING_TZ)
         raw = raw.strip()
@@ -853,26 +793,7 @@ class OWPatchPlugin(Star):
             except ValueError:
                 pass
 
-        # 格式: YYYY-MM 或 YYYY-M
-        if "-" in raw:
-            parts = raw.split("-")
-            try:
-                year = int(parts[0])
-                month = int(parts[1])
-                if len(parts) == 2 and 1 <= month <= 12 and 2016 <= year <= now.year:
-                    return year, month
-            except ValueError:
-                pass
-
-        # 格式: YYYY（纯年份，查询整年）
-        try:
-            year = int(raw)
-            if 2016 <= year <= now.year:
-                return year, None
-        except ValueError:
-            pass
-
-        # 格式: 纯数字月份（默认当年）
+        # 格式: 纯数字月份
         try:
             month = int(raw)
             if 1 <= month <= 12:

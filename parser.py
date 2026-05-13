@@ -173,6 +173,51 @@ def get_delta_sections(sections: list[dict], headings: list[str]) -> list[dict]:
     return [s for s in sections if s.get("heading") in hs]
 
 
+def diff_sections(old_sections: list[dict], new_sections: list[dict]) -> dict:
+    """对比两组章节，返回增／改／删分类结果。
+
+    Args:
+        old_sections: 旧版本的章节列表（各元素含 heading / content）
+        new_sections: 新版本的章节列表
+
+    Returns:
+        {
+            "added":      [section, ...],   # 新版本新增的章节
+            "modified":   [section, ...],   # 内容发生变化的章节（返回新版本）
+            "deleted":    [section, ...],   # 旧版本有但新版本已删除的章节
+        }
+    """
+    old_map = {}
+    for s in old_sections:
+        h = s.get("heading", "")
+        if h:
+            old_map[h] = s
+
+    new_map = {}
+    for s in new_sections:
+        h = s.get("heading", "")
+        if h:
+            new_map[h] = s
+
+    old_hashes = {h: compute_content_hash(s.get("content", "")) for h, s in old_map.items()}
+    new_hashes = {h: compute_content_hash(s.get("content", "")) for h, s in new_map.items()}
+
+    old_keys = set(old_map.keys())
+    new_keys = set(new_map.keys())
+
+    added_keys = new_keys - old_keys
+    deleted_keys = old_keys - new_keys
+    common_keys = old_keys & new_keys
+
+    modified_keys = {h for h in common_keys if old_hashes.get(h) != new_hashes.get(h)}
+
+    return {
+        "added":    [new_map[h] for h in sorted(added_keys)],
+        "modified": [new_map[h] for h in sorted(modified_keys)],
+        "deleted":  [old_map[h] for h in sorted(deleted_keys)],
+    }
+
+
 # ====================================================================
 # H4 分组提取
 # ====================================================================
