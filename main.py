@@ -747,6 +747,10 @@ class OWPatchPlugin(Star):
                 f"({len(sections)} 章节)"
             )
 
+        # 构建翻译后的标题和数据
+        translated_title = f"{last['title']} [中文]"
+        translated_patch = last
+
         # 复用现有发送逻辑
         platform = event.get_platform_name() or ""
         sender_id = event.get_sender_id() or ""
