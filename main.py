@@ -528,43 +528,69 @@ class OWPatchPlugin(Star):
             return
 
         yield event.plain_result(
-            f"🔍 正在调用大模型翻译（共 {len(sections)} 个章节），请稍候..."
+            f"🔍 正在处理翻译请求（共 {len(sections)} 个章节）..."
         )
 
-        # 构建 system prompt
-        custom_prompt = self._get_config(KEY_TRANSLATE_PROMPT, DEFAULT_TRANSLATE_PROMPT)
-        system_prompt = translator_mod.build_system_prompt(
-            custom_prompt=custom_prompt
-        )
+        # ── 计算 sections 哈希，用于缓存校验 ──
+        _sections_hash = translator_mod.compute_sections_hash(sections)
 
-        progress_messages = []
+        # ── 检查磁盘缓存（日期 + 内容哈希匹配时直接复用）──
+        _cache_dir = self.state_mgr.data_dir / "cache" if self.state_mgr.data_dir else None
+        if _cache_dir:
+            translated_sections = translator_mod.load_translation_cache(
+                _cache_dir, last["date"], _sections_hash,
+            )
+            if translated_sections is not None:
+                # 🎯 缓存命中
+                yield event.plain_result(
+                    f"✅ 使用缓存的翻译结果（{len(sections)} 个章节，无需重新翻译）"
+                )
+                logger.info(
+                    f"[owpatch] 翻译缓存命中: {last.get('date', '')}"
+                )
+                _cache_hit = True
+            else:
+                _cache_hit = False
+        else:
+            _cache_hit = False
 
-        def _record_progress(current: int, total: int):
-            if current < total:
-                progress_messages.append(current)
+        if not _cache_hit:
+            yield event.plain_result(
+                f"🔍 正在调用大模型翻译（共 {len(sections)} 个章节），请稍候..."
+            )
 
-        translated_sections = await translator_mod.translate_sections(
-            provider=provider,
-            sections=sections,
-            system_prompt=system_prompt,
-            progress_callback=_record_progress,
-        )
+            # 构建 system prompt
+            custom_prompt = self._get_config(KEY_TRANSLATE_PROMPT, DEFAULT_TRANSLATE_PROMPT)
+            system_prompt = translator_mod.build_system_prompt(
+                custom_prompt=custom_prompt
+            )
 
-        for cur in progress_messages:
-            yield event.plain_result(f"🔄 翻译中 {cur}/{len(sections)}...")
+            progress_messages = []
 
-        # 构建翻译后的补丁数据
-        translated_title = f"🌐 [中文翻译] {last['title']}"
-        translated_patch = {
-            "title": translated_title,
-            "text": "",  # 翻译后不再使用 text（由 sections 驱动）
-            "sections": translated_sections,
-        }
+            def _record_progress(current: int, total: int):
+                if current < total:
+                    progress_messages.append(current)
 
-        logger.info(
-            f"[owpatch] 翻译完成: {last.get('date', '')} "
-            f"({len(sections)} 章节)"
-        )
+            translated_sections = await translator_mod.translate_sections(
+                provider=provider,
+                sections=sections,
+                system_prompt=system_prompt,
+                progress_callback=_record_progress,
+            )
+
+            for cur in progress_messages:
+                yield event.plain_result(f"🔄 翻译中 {cur}/{len(sections)}...")
+
+            # ── 保存翻译缓存（下次相同内容无需重新翻译）──
+            if _cache_dir:
+                translator_mod.save_translation_cache(
+                    _cache_dir, last["date"], _sections_hash, translated_sections,
+                )
+
+            logger.info(
+                f"[owpatch] 翻译完成: {last.get('date', '')} "
+                f"({len(sections)} 章节)"
+            )
 
         # 复用现有发送逻辑
         platform = event.get_platform_name() or ""

@@ -9,6 +9,9 @@
   - 逐章节调用 LLM 翻译，每章完成后显示进度
   - 错误处理：单章翻译失败时保留英文原文，不中断整体流程
   - 降级策略：skill 文件缺失时使用内置 ~20 个核心术语兜底
+- **翻译缓存**：翻译结果按日期+内容哈希持久化到磁盘，同一补丁内容未变更时秒级复用
+  - 缓存文件：`data/plugin_data/astrbot_plugin_owpatch/cache/translation/{date}_{hash_prefix}.json`
+  - 联网检测到补丁更新后自动触发重新翻译（哈希不匹配）
 
 ### 🔧 优化
 - **SKILL.md 重构**：从 400+ 行 Agent 工作流文档精简为 ~120 行 LLM system prompt 模板

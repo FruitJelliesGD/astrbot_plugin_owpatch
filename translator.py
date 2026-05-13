@@ -2,10 +2,14 @@
 翻译模块 — 读取 SKILL.md 与术语对照表，构建 system prompt，逐章节调用 LLM 翻译
 """
 
+import hashlib
 import json
 import re
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from astrbot.api import logger
+
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 # ------------------------------------------------------------------
 # 降级用内置术语表（skill 文件缺失时的兜底）
@@ -287,3 +291,91 @@ def _parse_translated_sub_sections(
                     for s in original_subs]
 
     return result if result else original_subs
+
+
+# ------------------------------------------------------------------
+# 翻译缓存（持久化磁盘缓存，按日期+内容哈希索引）
+# ------------------------------------------------------------------
+
+def compute_sections_hash(sections: list[dict]) -> str:
+    """计算 sections 列表的 SHA256 哈希（序列化为确定性 JSON）。"""
+    data = json.dumps(sections, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def load_translation_cache(
+    cache_dir: Path, date: str, sections_hash: str
+) -> list[dict] | None:
+    """加载翻译缓存。
+
+    Args:
+        cache_dir: 缓存根目录（如 data/plugin_data/.../cache/）
+        date: 补丁日期（如 2026-05-13）
+        sections_hash: sections 的 SHA256 哈希值
+
+    Returns:
+        翻译后的 sections 列表；缓存不存在或哈希不匹配时返回 None
+    """
+    trans_dir = cache_dir / "translation"
+    if not trans_dir.exists():
+        return None
+
+    hash_prefix = sections_hash[:16]
+    cache_file = trans_dir / f"{date}_{hash_prefix}.json"
+
+    if not cache_file.exists():
+        # 检查相同日期的其他缓存（补丁内容可能已更新）
+        existing = list(trans_dir.glob(f"{date}_*.json"))
+        if existing:
+            logger.info(
+                f"[translator] 存在旧版本翻译缓存，补丁可能已更新: "
+                f"{existing[0].name}"
+            )
+        return None
+
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        cached_hash = data.get("hash", "")
+        if cached_hash != sections_hash:
+            logger.warning(
+                f"[translator] 缓存哈希不匹配: {cached_hash[:16]} ≠ {hash_prefix}"
+            )
+            return None
+        logger.info(f"[translator] 翻译缓存命中: {cache_file.name}")
+        return data.get("sections", [])
+    except Exception as e:
+        logger.warning(f"[translator] 读取翻译缓存失败: {e}")
+        return None
+
+
+def save_translation_cache(
+    cache_dir: Path,
+    date: str,
+    sections_hash: str,
+    translated_sections: list[dict],
+) -> None:
+    """保存翻译缓存到磁盘。
+
+    缓存文件路径: {cache_dir}/translation/{date}_{hash_prefix}.json
+    """
+    trans_dir = cache_dir / "translation"
+    trans_dir.mkdir(parents=True, exist_ok=True)
+
+    hash_prefix = sections_hash[:16]
+    cache_file = trans_dir / f"{date}_{hash_prefix}.json"
+
+    payload = {
+        "date": date,
+        "hash": sections_hash,
+        "sections": translated_sections,
+        "translated_at": datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    try:
+        cache_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(f"[translator] 翻译缓存已保存: {cache_file.name}")
+    except Exception as e:
+        logger.warning(f"[translator] 保存翻译缓存失败: {e}")
