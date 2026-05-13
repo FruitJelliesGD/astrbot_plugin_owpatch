@@ -1,0 +1,55 @@
+{
+  "check_interval_minutes": {
+    "description": "定时窗口内的检查间隔（分钟）",
+    "type": "int",
+    "default": 10,
+    "hint": "在每天设定的时间窗口内，每隔多少分钟轮询一次"
+  },
+  "window_start_time": {
+    "description": "每日检查窗口开始时间（北京时间）",
+    "type": "string",
+    "default": "01:50",
+    "hint": "格式 HH:MM，24小时制。例如 01:50"
+  },
+  "window_end_time": {
+    "description": "每日检查窗口结束时间（北京时间）",
+    "type": "string",
+    "default": "04:00",
+    "hint": "格式 HH:MM，24小时制。例如 04:00"
+  },
+  "base_url_template": {
+    "description": "补丁页面 URL 模板",
+    "type": "string",
+    "default": "https://overwatch.blizzard.com/en-us/news/patch-body/live/{year}/{month:02d}/",
+    "hint": "{year} 和 {month:02d} 会被自动替换为当前年月"
+  },
+  "user_agent": {
+    "description": "HTTP 请求 User-Agent",
+    "type": "string",
+    "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  },
+  "request_timeout": {
+    "description": "HTTP 请求超时时间（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "网络请求的超时秒数。国内访问暴雪服务器建议 60 秒以上"
+  },
+  "proxy": {
+    "description": "HTTP 代理地址（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "例如 http://127.0.0.1:7890。留空则不使用代理"
+  },
+  "cache_ttl_minutes": {
+    "description": "页面缓存有效期（分钟）",
+    "type": "int",
+    "default": 10,
+    "hint": "同一 URL 在此时间内重复查询时直接返回缓存，防止频繁请求被暴雪风控。定时检查和新补丁检测始终强制刷新"
+  },
+  "include_stadium": {
+    "description": "是否包含 Stadium Updates 内容",
+    "type": "bool",
+    "default": false,
+    "hint": "关闭后推送和查询时将过滤掉 Stadium Updates 章节及 Bug Fixes 中的 Stadium 子节"
+  }
+}
