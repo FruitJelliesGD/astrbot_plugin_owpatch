@@ -13,6 +13,7 @@ KEY_REQUEST_TIMEOUT = "request_timeout"
 KEY_PROXY = "proxy"
 KEY_CACHE_TTL = "cache_ttl_minutes"
 KEY_INCLUDE_STADIUM = "include_stadium"
+KEY_TRANSLATE_PROMPT = "translate_prompt"
 
 # ---------- 默认值 ----------
 
@@ -31,6 +32,7 @@ DEFAULT_REQUEST_TIMEOUT = 60         # 秒
 DEFAULT_PROXY = ""                   # 代理地址，为空则不使用
 DEFAULT_CACHE_TTL = 10               # 分钟
 DEFAULT_INCLUDE_STADIUM = False      # 默认不包含 Stadium
+DEFAULT_TRANSLATE_PROMPT = ""        # 翻译自定义 prompt，默认为空（使用 SKILL.md 规则）
 
 # ---------- 状态文件 ----------
 

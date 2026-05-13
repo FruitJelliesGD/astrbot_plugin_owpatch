@@ -117,6 +117,7 @@ def build_help_message() -> str:
         "/owpatch query <月份> <日期> — 查看当年指定日期补丁内容\n"
         "/owpatch cache — 批量预热历史补丁到本地\n"
         "/owpatch cache status — 查看缓存统计\n"
+        "/owpatch translate — 将上次查询的补丁日志翻译为中文\n"
         "/owpatch help — 显示本帮助"
     )
 

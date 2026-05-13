@@ -51,5 +51,11 @@
     "type": "bool",
     "default": false,
     "hint": "关闭后推送和查询时将过滤掉 Stadium Updates 章节及 Bug Fixes 中的 Stadium 子节"
+  },
+  "translate_prompt": {
+    "description": "自定义翻译 Prompt（可选）",
+    "type": "text",
+    "default": "",
+    "hint": "留空则使用内置 Skill 翻译规范（SKILL.md + overwatch_terms.json）。填写后将追加到系统提示中用于微调翻译风格。"
   }
 }

@@ -20,6 +20,7 @@ from .config import (
     KEY_PROXY,
     KEY_CACHE_TTL,
     KEY_INCLUDE_STADIUM,
+    KEY_TRANSLATE_PROMPT,
     DEFAULT_CHECK_INTERVAL,
     DEFAULT_WINDOW_START,
     DEFAULT_WINDOW_END,
@@ -29,6 +30,7 @@ from .config import (
     DEFAULT_PROXY,
     DEFAULT_CACHE_TTL,
     DEFAULT_INCLUDE_STADIUM,
+    DEFAULT_TRANSLATE_PROMPT,
 )
 from . import fetcher as fetcher_mod
 from .fetcher import fetch_page, build_monthly_url
@@ -47,6 +49,7 @@ from .message_builder import (
 from .cache_manager import PatchCache
 from .scheduler import PatchScheduler
 from .forward_builder import build_raw_forward
+from . import translator as translator_mod
 
 # 北京时区
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -68,6 +71,8 @@ class OWPatchPlugin(Star):
         self.patch_cache: PatchCache | None = None
         self.scheduler: PatchScheduler | None = None
         self._check_lock = asyncio.Lock()
+        # 会话级缓存：umo → 最近一次 query 的补丁数据（用于 translate 指令）
+        self._last_query: dict[str, dict] = {}
 
     # ==================================================================
     # 生命周期
@@ -413,7 +418,19 @@ class OWPatchPlugin(Star):
             has_delta = bool(diff.get("added") or diff.get("modified") or diff.get("deleted"))
 
         # ────────────────────────────────────────────────────────────────
-        # 第六步：推送 — 有差异时先发 Delta
+        # 第六步：缓存当前查询供 translate 指令使用
+        # ────────────────────────────────────────────────────────────────
+        umo_query = event.unified_msg_origin
+        self._last_query[umo_query] = {
+            "title": display_target["title"],
+            "text": display_target.get("text", ""),
+            "sections": display_target.get("sections", []),
+            "date": target_date,
+        }
+        logger.info(f"[owpatch] 已缓存 {umo_query} 的查询结果: {target_date}")
+
+        # ────────────────────────────────────────────────────────────────
+        # 第七步：推送 — 有差异时先发 Delta
         # ────────────────────────────────────────────────────────────────
         platform = event.get_platform_name() or ""
         sender_id = event.get_sender_id() or ""
@@ -463,6 +480,117 @@ class OWPatchPlugin(Star):
             title=display_target["title"],
             text=display_target["text"],
             sections=display_target["sections"],
+            platform_name=platform,
+            bot_self_id=sender_id,
+        )
+        for chain in chains:
+            yield event.chain_result(chain)
+        event.stop_event()
+
+    # ==================================================================
+    # 指令：翻译补丁
+    # ==================================================================
+
+    @owpatch.command("translate")
+    async def cmd_translate(self, event: AstrMessageEvent):
+        """将上次查询的补丁日志翻译为中文（调用大模型逐章节翻译）。
+
+        用法：
+            /owpatch translate    → 翻译上次查询的补丁
+        """
+        umo = event.unified_msg_origin
+        last = self._last_query.get(umo)
+
+        if last is None:
+            yield event.plain_result(
+                "⚠️ 请先使用 `/owpatch query <月份> <日期>` 查询一份补丁日志后再使用翻译功能。"
+            )
+            event.stop_event()
+            return
+
+        # 获取 LLM provider
+        try:
+            provider = self.context.get_using_provider(umo=umo)
+        except Exception:
+            provider = None
+
+        if provider is None:
+            yield event.plain_result(
+                "❌ 当前会话未配置大语言模型，请在 WebUI 中配置后再使用翻译功能。"
+            )
+            event.stop_event()
+            return
+
+        sections = last.get("sections", [])
+        if not sections:
+            yield event.plain_result("⚠️ 上次查询的补丁没有可翻译的内容。")
+            event.stop_event()
+            return
+
+        yield event.plain_result(
+            f"🔍 正在调用大模型翻译（共 {len(sections)} 个章节），请稍候..."
+        )
+
+        # 构建 system prompt
+        custom_prompt = self._get_config(KEY_TRANSLATE_PROMPT, DEFAULT_TRANSLATE_PROMPT)
+        system_prompt = translator_mod.build_system_prompt(
+            custom_prompt=custom_prompt
+        )
+
+        progress_messages = []
+
+        def _record_progress(current: int, total: int):
+            if current < total:
+                progress_messages.append(current)
+
+        translated_sections = await translator_mod.translate_sections(
+            provider=provider,
+            sections=sections,
+            system_prompt=system_prompt,
+            progress_callback=_record_progress,
+        )
+
+        for cur in progress_messages:
+            yield event.plain_result(f"🔄 翻译中 {cur}/{len(sections)}...")
+
+        # 构建翻译后的补丁数据
+        translated_title = f"🌐 [中文翻译] {last['title']}"
+        translated_patch = {
+            "title": translated_title,
+            "text": "",  # 翻译后不再使用 text（由 sections 驱动）
+            "sections": translated_sections,
+        }
+
+        logger.info(
+            f"[owpatch] 翻译完成: {last.get('date', '')} "
+            f"({len(sections)} 章节)"
+        )
+
+        # 复用现有发送逻辑
+        platform = event.get_platform_name() or ""
+        sender_id = event.get_sender_id() or ""
+        uin = int(sender_id) if sender_id.isdigit() else 0
+
+        if platform == "aiocqhttp" and uin:
+            try:
+                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                if isinstance(event, AiocqhttpMessageEvent):
+                    raw_fwds = build_raw_forward(translated_title, translated_sections, uin)
+                    gid = event.message_obj.group_id
+                    for fwd in raw_fwds:
+                        if gid:
+                            await event.bot.call_action("send_group_forward_msg", group_id=int(gid), messages=fwd)
+                        else:
+                            await event.bot.call_action("send_private_forward_msg", user_id=uin, messages=fwd)
+                    event.stop_event()
+                    return
+            except Exception as e:
+                logger.warning(f"[owpatch] 翻译转发失败，回退: {e}")
+
+        chains = build_patch_message(
+            title=translated_title,
+            text=translated_patch["text"],
+            sections=translated_sections,
             platform_name=platform,
             bot_self_id=sender_id,
         )
