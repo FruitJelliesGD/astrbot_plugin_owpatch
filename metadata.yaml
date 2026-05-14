@@ -2,7 +2,7 @@ name: astrbot_plugin_owpatch
 display_name: 守望先锋补丁监控
 desc: 自动监控守望先锋最新补丁日志，在每天凌晨窗口内轮询检查，发现新补丁后推送到绑定的会话。支持手动检查与历史补丁查询。
 short_desc: 监控守望先锋补丁日志并自动推送
-version: v1.2.0
+version: v1.2.2
 author: 果冻大神
 repo: https://github.com/FruitJelliesGD/astrbot_plugin_owpatch
 support_platforms:

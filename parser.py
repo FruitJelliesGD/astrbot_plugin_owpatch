@@ -156,6 +156,20 @@ def compute_content_hash(raw_html: str) -> str:
     return hashlib.sha256(raw_html.encode("utf-8")).hexdigest()
 
 
+def normalize_text(text: str) -> str:
+    """归一化文本：统一 Unicode 形式、换行符、压缩空行，用于稳定比较。"""
+    import unicodedata
+    text = unicodedata.normalize("NFC", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def compute_text_hash(text: str) -> str:
+    """对归一化后的文本计算 SHA256 哈希。"""
+    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
+
+
 def compute_section_hashes(sections: list[dict]) -> dict:
     """为每个 H4 章节内容计算哈希 {heading: sha256}。"""
     result = {}

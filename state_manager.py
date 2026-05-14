@@ -87,10 +87,11 @@ class StateManager:
         recorded_date = self._data.get("last_patch_date", "")
         recorded_hash = self._data.get("last_patch_hash", "")
 
-        # 日期已更新或内容哈希已变化 → 新补丁
+        # 日期已更新 → 新补丁
         if latest_date and latest_date != recorded_date:
             return True
-        if latest_hash and latest_hash != recorded_hash:
+        # 仅在本地哈希存在时校验（迁移后旧哈希被清空，跳过比对避免误判）
+        if recorded_hash and latest_hash and latest_hash != recorded_hash:
             return True
         return False
 
@@ -107,6 +108,29 @@ class StateManager:
     def get_last_patch_date(self) -> str:
         """获取本地记录的最新补丁日期。"""
         return self._data.get("last_patch_date", "")
+
+    def has_valid_hash(self) -> bool:
+        """检查当前是否存储了有效的文本哈希。"""
+        return bool(self._data.get("last_patch_hash", ""))
+
+    def migrate_hash_if_needed(self) -> bool:
+        """检测旧版 raw_html 哈希并迁移到新版文本哈希。
+
+        新版使用归一化纯文本哈希，旧版使用 raw_html 哈希。
+        迁移策略：仅清空整版哈希（last_patch_hash），
+        章节级哈希（section_hashes）基于纯文本 content 计算，兼容新方案，予以保留。
+        返回 True 表示发生了迁移。
+        """
+        version = self._data.get("state_version", 1)
+        if version >= 2:
+            return False
+
+        logger.info("[state] 检测到旧版状态格式，执行哈希迁移...")
+        self._data.pop("last_patch_hash", None)
+        self._data["state_version"] = 2
+        self.save()
+        logger.info("[state] 哈希迁移完成（旧整版 hash 已清空，章节 hashes 保留，下次检查自动重建基线）")
+        return True
 
     def set_baseline(self, date: str, content_hash: str, section_hashes: dict | None = None) -> None:
         """首次安装时静默记录基线，不标记为已推送。"""
@@ -215,6 +239,7 @@ class StateManager:
     @staticmethod
     def _default_state() -> dict:
         return {
+            "state_version": 2,
             "last_patch_date": "",
             "last_patch_hash": "",
             "bound_umos": [],

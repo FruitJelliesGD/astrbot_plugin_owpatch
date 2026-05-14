@@ -34,7 +34,7 @@ from .config import (
 )
 from . import fetcher as fetcher_mod
 from .fetcher import fetch_page, build_monthly_url
-from .parser import parse_patches, get_latest_patch, get_patch_dates, compute_content_hash, filter_stadium, compute_section_hashes, diff_sections
+from .parser import parse_patches, get_latest_patch, get_patch_dates, compute_content_hash, compute_text_hash, filter_stadium, compute_section_hashes, diff_sections
 from .state_manager import StateManager
 from .message_builder import (
     build_patch_message,
@@ -90,6 +90,9 @@ class OWPatchPlugin(Star):
         # 初始化状态管理器
         self.state_mgr.init_data_dir()
         self.state_mgr.load()
+
+        # 哈希迁移：旧版 raw_html 哈希 → 新版纯文本哈希
+        self.state_mgr.migrate_hash_if_needed()
 
         # 初始化缓存管理器（单级永久缓存）
         if self.state_mgr.data_dir:
@@ -829,7 +832,7 @@ class OWPatchPlugin(Star):
             return False
 
         latest_date = latest["date"]
-        latest_hash = compute_content_hash(latest["raw_html"])
+        latest_hash = compute_text_hash(latest["text"])
         raw_sections = latest.get("sections", [])
         current_hashes = compute_section_hashes(raw_sections)
 
@@ -907,25 +910,16 @@ class OWPatchPlugin(Star):
         return await self._send_to_umos(umos, chains, "推送")
 
     async def _push_delta_then_full(self, latest: dict, diff: dict) -> bool:
-        """先推送 Delta 变更摘要，再推送完整补丁。"""
+        """仅推送 Delta 变更摘要（不再自动推送完整补丁）。"""
         umos = self.state_mgr.get_umos()
         if not umos:
             return True
 
         date_label = latest["date"][5:]  # "2026-05-12" → "05-12"
         delta_chains = build_delta_message(date_label, diff)
-        full_sent = False
 
-        # 发送 Delta
         delta_ok = await self._send_to_umos(umos, delta_chains, "Delta推送")
-        if delta_ok:
-            # 仅 delta 成功后发送完整补丁
-            full_sent = await self._push_full(latest)
-        else:
-            # delta 失败仍尝试推送完整补丁
-            full_sent = await self._push_full(latest)
-
-        return delta_ok or full_sent
+        return delta_ok
 
     async def _send_to_umos(self, umos: list[str], chains: list, label: str) -> bool:
         """遍历 UMO 发送消息链。"""
@@ -1008,7 +1002,7 @@ class OWPatchPlugin(Star):
         # 使用原始（未过滤）章节计算哈希
         latest = get_latest_patch(raw_pool)
         if latest:
-            latest_hash = compute_content_hash(latest["raw_html"])
+            latest_hash = compute_text_hash(latest["text"])
             section_hashes = compute_section_hashes(latest.get("sections", []))
             self.state_mgr.set_baseline(latest["date"], latest_hash, section_hashes)
             logger.info(

@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.2.2 (2026-05-15)
+
+### 🔧 优化
+
+- **哈希算法重构**：整版哈希从对原始 HTML 做 SHA256 改为对归一化纯文本做 SHA256，根除 HTML 格式变化（如标签、空白、属性顺序）导致哈希不同但可见文字未变的误判问题
+  - 新增 `normalize_text()`：Unicode NFC 归一化 + 统一换行符 + 压缩多余空行
+  - 新增 `compute_text_hash()`：对归一化文本计算 SHA256
+- **Delta 推送精简**：变更摘要不再包含章节完整内容
+  - 新增章节：标题 + 前 80 字预览
+  - 修改章节：标题 + 字数统计
+  - 删除章节：仅标题
+  - 末尾追加查询提示 `💡 发送 /owpatch query <月> <日> 查看完整补丁`
+  - Delta 推送后不再自动推送完整补丁，用户按需主动查询
+- **状态迁移**：首次加载旧版 `state.json` 时自动清除基于 raw_html 的旧哈希，保留基于纯文本的章节哈希，`is_new_patch` 增加空哈希保护避免误推
+
+### 📦 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `parser.py` | 新增 `normalize_text()`、`compute_text_hash()` |
+| `main.py` | 两处哈希调用改为 `compute_text_hash(latest["text"])`；`_push_delta_then_full` 移除自动推完整补丁；`initialize()` 调用 `migrate_hash_if_needed()` |
+| `state_manager.py` | `is_new_patch` 增加空哈希保护；新增 `migrate_hash_if_needed()`、`has_valid_hash()`；`_default_state` 增加 `state_version: 2` |
+| `message_builder.py` | `build_delta_message` 重写为精简版；删除 `_append_sec_content` |
+
 ## v1.2.1 (2026-05-26)
 
 ### ✨ 新功能

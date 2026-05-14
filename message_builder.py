@@ -126,58 +126,44 @@ def build_help_message() -> str:
 
 
 def build_delta_message(date_label: str, diff_result: dict) -> list:
-    """增量消息：基于分类 diff 结果构建，含 H5 子章节结构。
+    """增量消息：精简版，仅展示变更章节标题与简短摘要，不再包含完整内容。"""
+    parts = [f"📌 官方对 {date_label} 补丁进行了以下修改：", "=" * 35, ""]
 
-    Args:
-        date_label: 补丁日期标签（如 "05-12"）
-        diff_result: diff_sections() 返回值，含 added / modified / deleted 三个列表
-    """
-    parts = [f"📌 官方对 {date_label} 补丁进行了以下修改：", "=" * 40, ""]
-
-    # ── 新增 ──
     added = diff_result.get("added", [])
     if added:
         parts.append("🆕 新增章节：")
-        parts.append("─" * 20)
         for sec in added:
-            parts.append(f"━━━ {sec['heading']} ━━━")
-            _append_sec_content(parts, sec)
+            content = sec.get("content", "").strip()
+            preview = content[:80].rsplit("\n", 1)[0] if "\n" in content[:80] else content[:80]
+            if preview:
+                parts.append(f"  • {sec['heading']} — {preview}...")
+            else:
+                parts.append(f"  • {sec['heading']}")
         parts.append("")
 
-    # ── 修改 ──
     modified = diff_result.get("modified", [])
     if modified:
         parts.append("✏️ 内容变更章节：")
-        parts.append("─" * 20)
         for sec in modified:
-            parts.append(f"━━━ {sec['heading']} ━━━")
-            _append_sec_content(parts, sec)
+            content_len = len(sec.get("content", "").strip())
+            parts.append(f"  • {sec['heading']}（{content_len} 字）")
         parts.append("")
 
-    # ── 删除 ──
     deleted = diff_result.get("deleted", [])
     if deleted:
         parts.append("🗑️ 已删除章节：")
-        parts.append("─" * 20)
         for sec in deleted:
             parts.append(f"  • {sec['heading']}")
         parts.append("")
 
     if not added and not modified and not deleted:
         parts.append("  无变更。")
+        parts.append("")
+
+    parts.append(f"💡 发送 `/owpatch query {date_label.replace('-', ' ')}` 查看完整补丁。")
 
     full = "\n".join(parts)
     return [[Comp.Plain(c)] for c in _split_text(full, MAX_CHUNK_SIZE) if c.strip()]
-
-
-def _append_sec_content(parts: list, sec: dict):
-    """将章节内容（含 H5 子节）追加到 parts 列表。"""
-    for h5 in sec.get("sub_sections", []):
-        if h5.get("content", "").strip():
-            parts.append(f"▸ {h5['heading']}")
-            parts.append(h5["content"].strip())
-    if sec.get("content", "").strip() and not sec.get("sub_sections"):
-        parts.append(sec["content"].strip())
 
 
 # ====================================================================
