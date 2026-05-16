@@ -20,10 +20,12 @@ class PatchScheduler:
         check_callback,          # async callable: 执行检查逻辑
         get_config,              # callable: 获取配置值
         get_today_pushed,        # callable: 返回当日是否已推送
+        reset_daily,             # callable(str): 跨天重置回调，传入今日日期 YYYY-MM-DD
     ):
         self._check_callback = check_callback
         self._get_config = get_config
         self._get_today_pushed = get_today_pushed
+        self._reset_daily = reset_daily
         self._task: asyncio.Task | None = None
         self._running = False
 
@@ -60,11 +62,48 @@ class PatchScheduler:
         while self._running:
             try:
                 now = self._now_beijing()
-                interval = self._get_interval_minutes()
-                start_time, end_time = self._get_window_times()
+                today_str = now.strftime("%Y-%m-%d")
 
-                if self._in_window(now, start_time, end_time):
-                    # 在窗口内：检查当日是否已推送
+                # 跨天重置：修复调度器运行中跨天后 today_pushed 不能自动重置的问题
+                self._reset_daily(today_str)
+
+                interval = self._get_interval_minutes()
+
+                # ── 时间窗口模式 ──
+                if self._is_window_mode():
+                    start_time, end_time = self._get_window_times()
+
+                    if self._in_window(now, start_time, end_time):
+                        # 在窗口内：检查当日是否已推送
+                        if self._get_today_pushed():
+                            logger.debug(
+                                f"[scheduler] 今日已推送，跳过检查（{interval}分钟后重试）"
+                            )
+                            await asyncio.sleep(interval * 60)
+                            continue
+
+                        # 执行检查
+                        logger.info(
+                            f"[scheduler] 窗口内触发检查: {now.strftime('%H:%M:%S')}"
+                        )
+                        try:
+                            await self._check_callback()
+                        except Exception as e:
+                            logger.error(f"[scheduler] 检查回调异常: {e}")
+
+                        # 等待间隔
+                        await asyncio.sleep(interval * 60)
+                    else:
+                        # 在窗口外：计算到次日窗口开始的秒数
+                        sleep_seconds = self._seconds_until_next_window(now, start_time)
+                        logger.info(
+                            f"[scheduler] 不在窗口内（当前 {now.strftime('%H:%M')}），"
+                            f"休眠 {sleep_seconds / 60:.0f} 分钟到次日 {start_time}"
+                        )
+                        await asyncio.sleep(sleep_seconds)
+
+                # ── 全天轮询模式 ──
+                else:
                     if self._get_today_pushed():
                         logger.debug(
                             f"[scheduler] 今日已推送，跳过检查（{interval}分钟后重试）"
@@ -72,23 +111,15 @@ class PatchScheduler:
                         await asyncio.sleep(interval * 60)
                         continue
 
-                    # 执行检查
-                    logger.info(f"[scheduler] 窗口内触发检查: {now.strftime('%H:%M:%S')}")
+                    logger.info(
+                        f"[scheduler] 全天模式触发检查: {now.strftime('%H:%M:%S')}"
+                    )
                     try:
                         await self._check_callback()
                     except Exception as e:
                         logger.error(f"[scheduler] 检查回调异常: {e}")
 
-                    # 等待间隔
                     await asyncio.sleep(interval * 60)
-                else:
-                    # 在窗口外：计算到次日窗口开始的秒数
-                    sleep_seconds = self._seconds_until_next_window(now, start_time)
-                    logger.info(
-                        f"[scheduler] 不在窗口内（当前 {now.strftime('%H:%M')}），"
-                        f"休眠 {sleep_seconds / 60:.0f} 分钟到次日 {start_time}"
-                    )
-                    await asyncio.sleep(sleep_seconds)
 
             except asyncio.CancelledError:
                 logger.info("[scheduler] 调度器任务被取消")
@@ -122,6 +153,13 @@ class PatchScheduler:
             return time(start_h, start_m), time(end_h, end_m)
         except (ValueError, AttributeError):
             return time(1, 50), time(4, 0)
+
+    def _is_window_mode(self) -> bool:
+        """读取配置决定是否启用时间窗口限制。"""
+        try:
+            return bool(self._get_config("enable_time_window", True))
+        except Exception:
+            return True
 
     @staticmethod
     def _in_window(now: datetime, start: time, end: time) -> bool:

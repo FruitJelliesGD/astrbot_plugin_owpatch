@@ -57,5 +57,11 @@
     "type": "text",
     "default": "",
     "hint": "留空则使用内置 Skill 翻译规范（SKILL.md + overwatch_terms.json）。填写后将追加到系统提示中用于微调翻译风格。"
+  },
+  "enable_time_window": {
+    "description": "是否仅在每日时间窗口内轮询",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后仅在 window_start_time ~ window_end_time 之间轮询检查。关闭后全天 24 小时按 check_interval_minutes 间隔轮询"
   }
 }

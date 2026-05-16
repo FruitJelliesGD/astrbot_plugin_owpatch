@@ -22,6 +22,7 @@ from .config import (
     KEY_CACHE_TTL,
     KEY_INCLUDE_STADIUM,
     KEY_TRANSLATE_PROMPT,
+    KEY_ENABLE_TIME_WINDOW,
     DEFAULT_CHECK_INTERVAL,
     DEFAULT_WINDOW_START,
     DEFAULT_WINDOW_END,
@@ -32,6 +33,7 @@ from .config import (
     DEFAULT_CACHE_TTL,
     DEFAULT_INCLUDE_STADIUM,
     DEFAULT_TRANSLATE_PROMPT,
+    DEFAULT_ENABLE_TIME_WINDOW,
 )
 from . import fetcher as fetcher_mod
 from .fetcher import fetch_page, build_monthly_url
@@ -118,6 +120,7 @@ class OWPatchPlugin(Star):
             check_callback=self._scheduled_check,
             get_config=self._get_config,
             get_today_pushed=lambda: self.state_mgr.today_pushed,
+            reset_daily=self.state_mgr.reset_daily_if_new_day,
         )
         await self.scheduler.start()
 
