@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.3 (2026-05-16)
+
+### 🐛 修复
+
+- **修复插件配置不生效的问题**：`__init__` 方法缺少 `config` 形参，导致 AstrBot 框架传入的 `AstrBotConfig` 对象被 `TypeError` 静默丢弃，所有配置项回退到硬编码默认值
+  - 新增 `config: AstrBotConfig | None = None` 形参并赋值 `self.config = config`
+  - 新增 `from astrbot.api import AstrBotConfig` 导入
+
+### 📦 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `main.py` | `__init__` 签名新增 `config` 形参 + `self.config = config`；新增 `AstrBotConfig` 导入 |
+| `metadata.yaml` | 版本号 v1.2.2 → v1.2.3 |
+
 ## v1.2.2 (2026-05-15)
 
 ### 🔧 优化

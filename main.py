@@ -6,6 +6,7 @@ AstrBot 插件，继承 Star 基类
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from astrbot.api import AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -65,8 +66,9 @@ class OWPatchPlugin(Star):
     - 支持手动检查、历史补丁查询
     """
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
+        self.config = config
         self.state_mgr = StateManager()
         self.patch_cache: PatchCache | None = None
         self.scheduler: PatchScheduler | None = None
