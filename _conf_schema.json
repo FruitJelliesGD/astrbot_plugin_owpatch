@@ -63,5 +63,11 @@
     "type": "bool",
     "default": true,
     "hint": "开启后仅在 window_start_time ~ window_end_time 之间轮询检查。关闭后全天 24 小时按 check_interval_minutes 间隔轮询"
+  },
+  "auto_translate": {
+    "description": "自动翻译并推送汉化版（需配置大语言模型）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，定时检测到新补丁或补丁内容更新时，会在推送英文原版后自动调用大模型翻译并推送中文版。章节较多时翻译可能需要数分钟，期间不影响正常轮询。默认关闭。"
   }
 }

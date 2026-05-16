@@ -15,6 +15,7 @@ KEY_CACHE_TTL = "cache_ttl_minutes"
 KEY_INCLUDE_STADIUM = "include_stadium"
 KEY_TRANSLATE_PROMPT = "translate_prompt"
 KEY_ENABLE_TIME_WINDOW = "enable_time_window"
+KEY_AUTO_TRANSLATE = "auto_translate"
 
 # ---------- 默认值 ----------
 
@@ -35,6 +36,7 @@ DEFAULT_CACHE_TTL = 10               # 分钟
 DEFAULT_INCLUDE_STADIUM = False      # 默认不包含 Stadium
 DEFAULT_TRANSLATE_PROMPT = ""        # 翻译自定义 prompt，默认为空（使用 SKILL.md 规则）
 DEFAULT_ENABLE_TIME_WINDOW = True    # 默认开启时间窗口限制
+DEFAULT_AUTO_TRANSLATE = False       # 默认关闭自动翻译
 
 # ---------- 状态文件 ----------
 

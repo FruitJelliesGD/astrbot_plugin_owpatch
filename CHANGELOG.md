@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.0 (2026-05-16)
+
+### ✨ 新功能
+
+- **自动翻译推送（`auto_translate`）**：在 WebUI 配置中新增 `auto_translate` 开关（默认关闭），开启后定时检测到补丁推送时自动调用大模型翻译并推送汉化版
+  - 全新补丁检测（整版）和章节级增量更新（Delta）均触发自动翻译
+  - 翻译结果复用现有磁盘缓存机制，相同内容不会重复调用 LLM
+  - 异步 fire-and-forget 执行，不阻塞调度器轮询和英文原版推送
+  - 无 LLM provider 时静默跳过（日志 warning），不报错
+  - aiocqhttp 走原始嵌套合并转发，通用平台走 MessageChain
+
+### 📦 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `config.py` | 新增 `KEY_AUTO_TRANSLATE`、`DEFAULT_AUTO_TRANSLATE` |
+| `_conf_schema.json` | 新增 `auto_translate` 配置项（bool, default: false） |
+| `main.py` | 新增 `_auto_translate_and_push` 方法；`_check_and_notify` 两处挂钩；追加 import |
+| `metadata.yaml` | 版本号 v1.2.3 → v1.3.0 |
+
 ## v1.2.3 (2026-05-16)
 
 ### 🐛 修复

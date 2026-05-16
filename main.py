@@ -23,6 +23,7 @@ from .config import (
     KEY_INCLUDE_STADIUM,
     KEY_TRANSLATE_PROMPT,
     KEY_ENABLE_TIME_WINDOW,
+    KEY_AUTO_TRANSLATE,
     DEFAULT_CHECK_INTERVAL,
     DEFAULT_WINDOW_START,
     DEFAULT_WINDOW_END,
@@ -34,6 +35,7 @@ from .config import (
     DEFAULT_INCLUDE_STADIUM,
     DEFAULT_TRANSLATE_PROMPT,
     DEFAULT_ENABLE_TIME_WINDOW,
+    DEFAULT_AUTO_TRANSLATE,
 )
 from . import fetcher as fetcher_mod
 from .fetcher import fetch_page, build_monthly_url
@@ -846,6 +848,8 @@ class OWPatchPlugin(Star):
             logger.info(f"[owpatch] 发现新补丁！日期: {latest_date}")
             self.state_mgr.mark_pushed(latest_date, latest_hash, current_hashes)
             display_patch = self._apply_stadium_filter([latest])[0]
+            # 自动翻译（异步，不阻塞推送流程）
+            asyncio.create_task(self._auto_translate_and_push(display_patch))
             return await self._push_full(display_patch)
 
         # 情况 2：节级增量检测（含新增 / 修改 / 删除）
@@ -879,6 +883,7 @@ class OWPatchPlugin(Star):
             self.state_mgr.mark_pushed(latest_date, latest_hash, current_hashes)
 
             # 先推送 Delta，再推送完整补丁
+            asyncio.create_task(self._auto_translate_and_push(display_patch))
             return await self._push_delta_then_full(display_patch, diff)
 
         logger.info(f"[owpatch] 补丁无变化（最新: {latest_date}）")
@@ -938,6 +943,145 @@ class OWPatchPlugin(Star):
                 logger.error(f"[owpatch] {label}失败 ({umo}): {e}")
         logger.info(f"[owpatch] {label}完成: {success}/{len(umos)} 成功")
         return True
+
+    # ==================================================================
+    # 自动翻译
+    # ==================================================================
+
+    async def _auto_translate_and_push(self, display_patch: dict) -> None:
+        """自动翻译完整补丁并推送到所有绑定会话（异步 fire-and-forget）。
+
+        在自动检测到新补丁或增量更新后，由 _check_and_notify 以
+        asyncio.create_task 方式调用，不阻塞调度器主循环。
+        """
+        # ├─ 配置检查 ──────────────────────────────────────────────
+        if not self._get_config(KEY_AUTO_TRANSLATE, DEFAULT_AUTO_TRANSLATE):
+            return
+
+        umos = self.state_mgr.get_umos()
+        if not umos:
+            return
+
+        sections = display_patch.get("sections", [])
+        if not sections:
+            logger.info("[owpatch] 自动翻译跳过：补丁无章节内容")
+            return
+
+        # ├─ 获取 LLM provider ─────────────────────────────────────
+        provider = None
+        for umo in umos:
+            try:
+                provider = self.context.get_using_provider(umo=umo)
+                if provider is not None:
+                    logger.info(f"[owpatch] 自动翻译使用 UMO 的 provider: {umo}")
+                    break
+            except Exception:
+                continue
+
+        if provider is None:
+            logger.warning(
+                "[owpatch] 自动翻译跳过：所有绑定会话均未配置大语言模型"
+            )
+            return
+
+        # ├─ 检查翻译缓存 ──────────────────────────────────────────
+        patch_date = display_patch.get("date", "")
+        patch_title = display_patch.get("title", "")
+        sections_hash = translator_mod.compute_sections_hash(sections)
+        cache_dir = (
+            self.state_mgr.data_dir / "cache"
+            if self.state_mgr.data_dir
+            else None
+        )
+
+        translated_sections = None
+        if cache_dir:
+            translated_sections = translator_mod.load_translation_cache(
+                cache_dir, patch_date, sections_hash,
+            )
+
+        if translated_sections is not None:
+            logger.info(
+                f"[owpatch] 自动翻译缓存命中: {patch_date}"
+            )
+        else:
+            # ├─ 调用 LLM 翻译 ────────────────────────────────────────
+            logger.info(
+                f"[owpatch] 自动翻译开始: {patch_date} ({len(sections)} 章节)"
+            )
+            custom_prompt = self._get_config(
+                KEY_TRANSLATE_PROMPT, DEFAULT_TRANSLATE_PROMPT
+            )
+            system_prompt = translator_mod.build_system_prompt(
+                custom_prompt=custom_prompt,
+            )
+
+            try:
+                translated_sections = await translator_mod.translate_sections(
+                    provider=provider,
+                    sections=sections,
+                    system_prompt=system_prompt,
+                )
+            except Exception as e:
+                logger.error(f"[owpatch] 自动翻译失败: {e}")
+                return
+
+            if cache_dir:
+                translator_mod.save_translation_cache(
+                    cache_dir, patch_date, sections_hash, translated_sections,
+                )
+
+            logger.info(
+                f"[owpatch] 自动翻译完成: {patch_date} ({len(sections)} 章节)"
+            )
+
+        # ├─ 推送翻译结果 ──────────────────────────────────────────
+        translated_title = f"{patch_title} [中文]"
+
+        # ── aiocqhttp 平台：原始嵌套转发 ──
+        try:
+            import re
+
+            platform = self.context.get_platform(
+                filter.PlatformAdapterType.AIOCQHTTP
+            )
+            if platform:
+                raw_fwds = build_raw_forward(
+                    translated_title, translated_sections, 0,
+                )
+                cl = platform.get_client().api
+                for umo in umos:
+                    g = re.search(r'GroupMessage:(\d+)', umo)
+                    u = re.search(r'FriendMessage:(\d+)', umo)
+                    for fwd in raw_fwds:
+                        if g:
+                            await cl.call_action(
+                                "send_group_forward_msg",
+                                group_id=int(g.group(1)),
+                                messages=fwd,
+                            )
+                        elif u:
+                            await cl.call_action(
+                                "send_private_forward_msg",
+                                user_id=int(u.group(1)),
+                                messages=fwd,
+                            )
+                logger.info(
+                    f"[owpatch] 自动翻译推送完成 (aiocqhttp): {patch_date}"
+                )
+                return
+        except Exception as e:
+            logger.warning(f"[owpatch] 自动翻译原始转发失败，回退: {e}")
+
+        # ── 通用平台：MessageChain ──
+        chains = build_patch_message(
+            title=translated_title,
+            text=display_patch.get("text", ""),
+            sections=translated_sections,
+            platform_name="aiocqhttp",
+            bot_self_id="",
+        )
+        await self._send_to_umos(umos, chains, "自动翻译推送")
 
     # ==================================================================
     # 回溯上月
